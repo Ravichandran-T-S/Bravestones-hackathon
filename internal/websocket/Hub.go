@@ -135,17 +135,18 @@ func (h *Hub) handleMessage(msg message.WsMessage) {
 // --- Start Quiz ---
 
 func (h *Hub) handleStartQuiz(payload interface{}) {
-	pl, ok := payload.(map[string]interface{})
+	pl, ok := payload.(message.StartQuizPayload)
 	if !ok {
 		log.Printf("[Hub %s] Invalid payload for start_quiz", h.channelID)
 		return
 	}
-	quizID := pl["channelId"].(string)
-	hostID := pl["hostId"].(string)
-	h.startQuiz(quizID, hostID)
+	quizID := pl.ChannelID
+	hostID := pl.HostID
+	participants := pl.Participants
+	h.startQuiz(quizID, hostID, participants)
 }
 
-func (h *Hub) startQuiz(quizID, hostID string) {
+func (h *Hub) startQuiz(quizID, hostID string, participants []message.ParticipantInfo) {
 	log.Printf("[Hub %s] Starting quiz with host=%s", quizID, hostID)
 
 	var quiz entity.Quiz
@@ -175,8 +176,9 @@ func (h *Hub) startQuiz(quizID, hostID string) {
 	h.broadcastMessage(message.WsMessage{
 		Type: "quiz_started",
 		Payload: message.StartQuizPayload{
-			ChannelID: quiz.ID,
-			HostID:    hostID,
+			ChannelID:    quiz.ID,
+			HostID:       hostID,
+			Participants: participants,
 		},
 	})
 }

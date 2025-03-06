@@ -116,7 +116,7 @@ func (cm *ChannelManager) JoinQuiz(topicName string, user *entity.User) (*Hub, e
 
 	// 5) If brand new quiz, set auto-start timer
 	if isNew {
-		timer := time.AfterFunc(1*time.Minute, func() {
+		timer := time.AfterFunc(60*time.Second, func() {
 			cm.autoStartQuiz(quiz.ID)
 		})
 		cm.quizTimers[quiz.ID] = timer
@@ -159,13 +159,38 @@ func (cm *ChannelManager) autoStartQuiz(quizID string) {
 	cm.db.Save(&quiz)
 	log.Printf("[ChannelManager] Auto-starting quiz (ID=%s). Host = %s", quiz.ID, hostID)
 
-	// Broadcast "start_quiz"
+	// ---------------------------------------------------------------------
+	// 1) Gather all participants for this quiz
+	// ---------------------------------------------------------------------
+
+	var participants []message.ParticipantInfo
+
+	// Find all scores (one row per user who joined)
+	var scoreRows []entity.Score
+	if err := cm.db.Where("quiz_id = ?", quizID).Find(&scoreRows).Error; err == nil {
+		for _, s := range scoreRows {
+			log.Printf("[ChannelManager] Found score row for user (ID=%s) in quiz (ID=%s)", s.UserID, s.QuizID)
+			// Retrieve the associated user
+			var u entity.User
+			if err := cm.db.First(&u, "id = ?", s.UserID).Error; err == nil && u.ID != "" {
+				log.Printf("[ChannelManager] Found user (ID=%s) for score row", u.ID)
+				participants = append(participants, message.ParticipantInfo{
+					UserID:   u.ID,
+					Username: u.Username,
+				})
+			}
+		}
+	}
+	// ---------------------------------------------------------------------
+	x := message.StartQuizPayload{
+		ChannelID:    quiz.ID,
+		HostID:       hostID,
+		Participants: participants, // <--- new field
+	}
+	// Broadcast "start_quiz" with participants
 	hub.broadcast <- message.WsMessage{
-		Type: "start_quiz",
-		Payload: message.StartQuizPayload{
-			ChannelID: quiz.ID,
-			HostID:    hostID,
-		},
+		Type:    "start_quiz",
+		Payload: x,
 	}
 }
 

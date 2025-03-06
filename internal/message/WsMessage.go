@@ -6,8 +6,14 @@ type WsMessage struct {
 }
 
 type StartQuizPayload struct {
-	ChannelID string `json:"channelId"`
-	HostID    string `json:"hostId"`
+	ChannelID    string            `json:"channelId"`
+	HostID       string            `json:"hostId"`
+	Participants []ParticipantInfo `json:"participants"`
+}
+
+type ParticipantInfo struct {
+	UserID   string `json:"userId"`
+	Username string `json:"username"`
 }
 
 type QuestionPayload struct {
