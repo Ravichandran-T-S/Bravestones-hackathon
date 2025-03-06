@@ -90,6 +90,16 @@ func (cm *ChannelManager) JoinQuiz(topicName string, user *entity.User) (*Hub, e
 	hub.addJoinedUser(user.ID)
 	log.Printf("[ChannelManager] User (ID=%s) joined quiz (ID=%s).", user.ID, quiz.ID)
 
+	// Broadcast "user_joined" signal
+	hub.broadcast <- message.WsMessage{
+		Type: "user_joined",
+		Payload: struct {
+			UserID string `json:"userId"`
+		}{
+			UserID: user.ID,
+		},
+	}
+	log.Printf("[ChannelManager] Broadcast 'user_joined' for user=%s on quiz=%s", user.ID, quiz.ID)
 	// 4) Create Score row if not existing
 	var existingScore entity.Score
 	cm.db.Where("quiz_id = ? AND user_id = ?", quiz.ID, user.ID).First(&existingScore)
