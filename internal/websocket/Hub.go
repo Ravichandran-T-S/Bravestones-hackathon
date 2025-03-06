@@ -25,11 +25,18 @@ type Hub struct {
 	activeQuiz  *QuizSession
 	joinedUsers []string
 	mutex       sync.Mutex
+	incoming    chan inboundMessage
+}
+
+type inboundMessage struct {
+	client *Client
+	msg    message.WsMessage
 }
 
 type Client struct {
-	Conn *websocket.Conn
-	Send chan []byte
+	Conn   *websocket.Conn
+	Send   chan []byte
+	UserID string
 }
 
 type QuizSession struct {
@@ -49,6 +56,7 @@ func NewHub(channelID string, db *gorm.DB) *Hub {
 		Register:   make(chan *Client),
 		unregister: make(chan *Client),
 		activeQuiz: nil,
+		incoming:   make(chan inboundMessage),
 	}
 }
 
@@ -69,8 +77,22 @@ func (h *Hub) Run() {
 		case msg := <-h.broadcast:
 			log.Printf("[Hub %s] Received message of type %s", h.channelID, msg.Type)
 			h.handleMessage(msg)
+		case inbound := <-h.incoming:
+			// inbound is (client + WsMessage)
+			h.handleInboundMessage(inbound.client, inbound.msg)
 		}
 	}
+}
+
+func (h *Hub) handleInboundMessage(c *Client, msg message.WsMessage) {
+	// If it’s a heartbeat, respond only to that client
+	if msg.Type == "heartbeat" {
+		// Example: send back a minimal response, just to keep the connection alive
+		c.Send <- []byte(`{"type":"heartbeat","payload":{}}`)
+		return
+	}
+	// Otherwise, handle it via the existing message logic
+	h.handleMessage(msg)
 }
 
 func (h *Hub) addJoinedUser(userID string) {
@@ -137,8 +159,10 @@ func (h *Hub) startQuiz(quizID, hostID string) {
 		quiz.Status = "active"
 		quiz.HostID = hostID
 		quiz.UpdatedAt = time.Now()
-		h.db.Save(&quiz)
-		log.Printf("[Hub %s] Quiz status changed to 'active'. Host set to %s", quizID, hostID)
+		if h.db != nil {
+			h.db.Save(&quiz)
+			log.Printf("[Hub %s] Quiz status changed to 'active'. Host set to %s", quizID, hostID)
+		}
 	}
 
 	if h.activeQuiz == nil {
@@ -288,9 +312,11 @@ func (h *Hub) handleAnswer(payload interface{}) {
 	score.LastQuestion = ans.QuestionIndex
 	score.UpdatedAt = time.Now()
 	h.db.Save(&score)
-
+	log.Printf("Score record after save: ID=%s, totalScore=%d", score.ID, score.TotalScore)
 	// Also track ephemeral score
-	h.activeQuiz.Scores[ans.UserID] = score.TotalScore
+	if h.activeQuiz != nil {
+		h.activeQuiz.Scores[ans.UserID] = score.TotalScore
+	}
 }
 
 // --- Question Completion ---
@@ -458,7 +484,10 @@ func (c *Client) ReadPump(hub *Hub) {
 			continue
 		}
 
-		hub.broadcast <- wsMsg
+		hub.incoming <- inboundMessage{
+			client: c,
+			msg:    wsMsg,
+		}
 	}
 }
 
