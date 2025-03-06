@@ -13,7 +13,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// Hub manages websocket clients and a single quiz session.
 type Hub struct {
 	ID         string
 	channelID  string // same as quizID
@@ -23,29 +22,23 @@ type Hub struct {
 	Register   chan *Client
 	unregister chan *Client
 
-	// Active quiz session data
-	activeQuiz *QuizSession
-
-	// Track joined users to handle host rotation
+	activeQuiz  *QuizSession
 	joinedUsers []string
 	mutex       sync.Mutex
 }
 
-// Client represents a single WebSocket connection
 type Client struct {
 	Conn *websocket.Conn
 	Send chan []byte
 }
 
-// QuizSession holds ephemeral state for the ongoing quiz
 type QuizSession struct {
 	CurrentQuestion *message.QuestionPayload
 	Timer           *time.Timer
 	Scores          map[string]int
-	HostIndex       int // which user in joinedUsers is the current host
+	HostIndex       int
 }
 
-// NewHub creates a Hub for a given quizID
 func NewHub(channelID string, db *gorm.DB) *Hub {
 	return &Hub{
 		ID:         uuid.New().String(),
@@ -59,84 +52,86 @@ func NewHub(channelID string, db *gorm.DB) *Hub {
 	}
 }
 
-// Run processes register/unregister and broadcasts
 func (h *Hub) Run() {
 	for {
 		select {
 		case client := <-h.Register:
 			h.clients[client] = true
+			log.Printf("[Hub %s] Client registered. Total clients: %d", h.channelID, len(h.clients))
 		case client := <-h.unregister:
 			delete(h.clients, client)
 			close(client.Send)
+			log.Printf("[Hub %s] Client unregistered. Total clients: %d", h.channelID, len(h.clients))
 		case msg := <-h.broadcast:
+			log.Printf("[Hub %s] Received message of type %s", h.channelID, msg.Type)
 			h.handleMessage(msg)
 		}
 	}
 }
 
-// addJoinedUser is called from ChannelManager.JoinQuiz to track who joined (for host rotation).
 func (h *Hub) addJoinedUser(userID string) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 
-	// Prevent duplicates
 	for _, uid := range h.joinedUsers {
 		if uid == userID {
 			return
 		}
 	}
 	h.joinedUsers = append(h.joinedUsers, userID)
+	log.Printf("[Hub %s] Added joined user %s. Total joined: %d", h.channelID, userID, len(h.joinedUsers))
 }
 
-// handleMessage routes incoming WsMessage by type
 func (h *Hub) handleMessage(msg message.WsMessage) {
 	switch msg.Type {
-
 	case "start_quiz":
-		// Usually called automatically from ChannelManager.
-		// But if triggered by a user, you could handle logic here.
-		pl, ok := msg.Payload.(map[string]interface{})
-		if !ok {
-			return
-		}
-		channelID := pl["channelId"].(string)
-		hostID := pl["hostId"].(string)
-		h.startQuiz(channelID, hostID)
+		h.handleStartQuiz(msg.Payload)
 
 	case "question_posted":
-		// Host is posting a new question
 		h.handleQuestionPosted(msg.Payload)
 
 	case "submit_answer":
-		// Participant is submitting an answer
 		h.handleAnswer(msg.Payload)
 
 	case "end_question":
-		// Host forcibly ends the question timer
 		h.questionCompleted()
 
 	default:
-		log.Println("Unknown message type:", msg.Type)
+		log.Printf("[Hub %s] Unknown message type: %s", h.channelID, msg.Type)
 	}
 }
 
-// startQuiz sets quiz status to "active", picks/validates host, initializes session
+// --- Start Quiz ---
+
+func (h *Hub) handleStartQuiz(payload interface{}) {
+	pl, ok := payload.(map[string]interface{})
+	if !ok {
+		log.Printf("[Hub %s] Invalid payload for start_quiz", h.channelID)
+		return
+	}
+	quizID := pl["channelId"].(string)
+	hostID := pl["hostId"].(string)
+	h.startQuiz(quizID, hostID)
+}
+
 func (h *Hub) startQuiz(quizID, hostID string) {
+	log.Printf("[Hub %s] Starting quiz with host=%s", quizID, hostID)
+
 	var quiz entity.Quiz
 	h.db.First(&quiz, "id = ?", quizID)
 	if quiz.ID == "" {
+		log.Printf("[Hub %s] No quiz found with ID=%s", h.channelID, quizID)
 		return
 	}
 
-	// If the quiz is still waiting, or forcibly re-starting:
 	if quiz.Status == "waiting" {
 		quiz.Status = "active"
 		quiz.HostID = hostID
 		quiz.UpdatedAt = time.Now()
 		h.db.Save(&quiz)
+		log.Printf("[Hub %s] Quiz status changed to 'active'. Host set to %s", quizID, hostID)
 	}
 
-	// Initialize session if not already
 	if h.activeQuiz == nil {
 		h.activeQuiz = &QuizSession{
 			Scores:    make(map[string]int),
@@ -144,36 +139,39 @@ func (h *Hub) startQuiz(quizID, hostID string) {
 		}
 	}
 
-	// Broadcast to all clients that the quiz is started
 	h.broadcastMessage(message.WsMessage{
 		Type: "quiz_started",
 		Payload: message.StartQuizPayload{
-			ChannelID: quizID,
+			ChannelID: quiz.ID,
 			HostID:    hostID,
 		},
 	})
 }
 
-// handleQuestionPosted starts the question timer (30s default or from payload)
+// --- Question Posted ---
+
 func (h *Hub) handleQuestionPosted(payload interface{}) {
 	var qp message.QuestionPayload
 	bytes, _ := json.Marshal(payload)
 	if err := json.Unmarshal(bytes, &qp); err != nil {
-		log.Println("Invalid QuestionPayload:", err)
+		log.Printf("[Hub %s] Invalid QuestionPayload: %v", h.channelID, err)
 		return
 	}
 
-	// Validate host: only current host can post a question
+	log.Printf("[Hub %s] Host is posting question: %s (index=%d)", h.channelID, qp.Question, qp.QuestionIndex)
+
 	var quiz entity.Quiz
 	h.db.First(&quiz, "id = ?", h.channelID)
-
-	if quiz.ID == "" || quiz.Status != "active" {
+	if quiz.ID == "" {
+		log.Printf("[Hub %s] No quiz found for channelID=%s in handleQuestionPosted", h.channelID, h.channelID)
 		return
 	}
-	// If you want to verify that the user sending "question_posted" is quiz.HostID,
-	// you'll need to pass user ID along. For brevity, assume okay.
+	if quiz.Status != "active" {
+		log.Printf("[Hub %s] Quiz (ID=%s) not active; ignoring question_posted", h.channelID, quiz.ID)
+		return
+	}
 
-	// Save question in session
+	// Initialize session if needed
 	if h.activeQuiz == nil {
 		h.activeQuiz = &QuizSession{
 			Scores: make(map[string]int),
@@ -181,33 +179,36 @@ func (h *Hub) handleQuestionPosted(payload interface{}) {
 	}
 
 	h.activeQuiz.CurrentQuestion = &qp
-
-	// Increment the quiz.QuestionIndex
 	quiz.QuestionIndex++
 	h.db.Save(&quiz)
 
-	// The host is about to ask a question -> increment "QuestionsAsked"
+	// Increment "QuestionsAsked" for the host
 	var hostScore entity.Score
 	h.db.Where("quiz_id = ? AND user_id = ?", quiz.ID, quiz.HostID).First(&hostScore)
 	if hostScore.ID != "" {
 		hostScore.QuestionsAsked++
 		hostScore.UpdatedAt = time.Now()
 		h.db.Save(&hostScore)
+		log.Printf("[Hub %s] Incremented QuestionsAsked for host %s", h.channelID, quiz.HostID)
 	}
 
-	// Broadcast question to everyone
+	// Broadcast question to all
 	h.broadcastMessage(message.WsMessage{
 		Type: "question_posted",
-		Payload: message.QuestionPayload{
+		Payload: struct {
+			Question      string   `json:"question"`
+			Options       []string `json:"options"`
+			TimerDuration int      `json:"timerDuration"`
+			QuestionIndex int      `json:"questionIndex"`
+		}{
 			Question:      qp.Question,
 			Options:       qp.Options,
 			TimerDuration: qp.TimerDuration,
 			QuestionIndex: quiz.QuestionIndex,
-			// Do not reveal CorrectAnswer in broadcast
 		},
 	})
 
-	// Start a 30-second timer (or custom)
+	// Start timer (default 30s if none specified)
 	duration := 30
 	if qp.TimerDuration > 0 {
 		duration = qp.TimerDuration
@@ -218,38 +219,56 @@ func (h *Hub) handleQuestionPosted(payload interface{}) {
 	h.activeQuiz.Timer = time.AfterFunc(time.Duration(duration)*time.Second, func() {
 		h.questionCompleted()
 	})
+
+	log.Printf("[Hub %s] Question timer started for %d seconds", h.channelID, duration)
 }
 
-// handleAnswer updates a user's score
+// --- Answer Submission ---
+
 func (h *Hub) handleAnswer(payload interface{}) {
 	var ans message.AnswerPayload
 	bytes, _ := json.Marshal(payload)
 	if err := json.Unmarshal(bytes, &ans); err != nil {
-		log.Println("Invalid AnswerPayload:", err)
+		log.Printf("[Hub %s] Invalid AnswerPayload: %v", h.channelID, err)
 		return
 	}
 
-	// Validate we have a current question
 	if h.activeQuiz == nil || h.activeQuiz.CurrentQuestion == nil {
+		log.Printf("[Hub %s] No active question; ignoring answer from user=%s", h.channelID, ans.UserID)
 		return
 	}
-	// Validate question index
 	if ans.QuestionIndex != h.activeQuiz.CurrentQuestion.QuestionIndex {
+		log.Printf("[Hub %s] Stale answer for question index=%d (current=%d). Ignoring.",
+			h.channelID, ans.QuestionIndex, h.activeQuiz.CurrentQuestion.QuestionIndex)
 		return
 	}
 
+	log.Printf("[Hub %s] Received answer from user=%s for questionIndex=%d",
+		h.channelID, ans.UserID, ans.QuestionIndex)
+
+	// Retrieve quiz
 	var quiz entity.Quiz
 	h.db.First(&quiz, "id = ?", ans.ChannelID)
 	if quiz.ID == "" {
+		log.Printf("[Hub %s] No quiz found for ID=%s in handleAnswer", h.channelID, ans.ChannelID)
 		return
 	}
 
-	// Check if answer is correct
-	isCorrect := (ans.AnswerIndex == h.activeQuiz.CurrentQuestion.CorrectAnswer)
+	// Check correctness
+	isCorrect := ans.AnswerIndex == h.activeQuiz.CurrentQuestion.CorrectAnswer
+	log.Printf("[Hub %s] User=%s answeredIndex=%d, correctAnswer=%d => isCorrect=%v",
+		h.channelID, ans.UserID, ans.AnswerIndex, h.activeQuiz.CurrentQuestion.CorrectAnswer, isCorrect)
 
-	// Update Score table
+	// Update Score row
 	var score entity.Score
 	h.db.Where("quiz_id = ? AND user_id = ?", ans.ChannelID, ans.UserID).First(&score)
+	if score.ID == "" {
+		// Should never happen if user joined properly
+		score.ID = uuid.New().String()
+		score.QuizID = quiz.ID
+		score.UserID = ans.UserID
+		score.CreatedAt = time.Now()
+	}
 
 	if isCorrect {
 		score.TotalScore += 10
@@ -261,23 +280,24 @@ func (h *Hub) handleAnswer(payload interface{}) {
 	score.UpdatedAt = time.Now()
 	h.db.Save(&score)
 
-	// Track ephemeral score, too
+	// Also track ephemeral score
 	h.activeQuiz.Scores[ans.UserID] = score.TotalScore
 }
 
-// questionCompleted is called when the timer ends or host forcibly ends question
+// --- Question Completion ---
+
 func (h *Hub) questionCompleted() {
-	// If no active session or no current question, do nothing
 	if h.activeQuiz == nil || h.activeQuiz.CurrentQuestion == nil {
+		log.Printf("[Hub %s] questionCompleted called but no active question", h.channelID)
 		return
 	}
-	// Stop timer if still running
 	if h.activeQuiz.Timer != nil {
 		h.activeQuiz.Timer.Stop()
 		h.activeQuiz.Timer = nil
 	}
 
-	// Gather scores from DB for the scoreboard
+	log.Printf("[Hub %s] Question completed. Broadcasting scores...", h.channelID)
+
 	var scores []struct {
 		UserID    string `json:"userId"`
 		Total     int    `json:"total"`
@@ -288,8 +308,8 @@ func (h *Hub) questionCompleted() {
 		Select("user_id, total_score as total, last_score as last_score").
 		Scan(&scores)
 
-	// Broadcast "question_completed"
 	qIndex := h.activeQuiz.CurrentQuestion.QuestionIndex
+
 	h.broadcastMessage(message.WsMessage{
 		Type: "question_completed",
 		Payload: struct {
@@ -305,21 +325,21 @@ func (h *Hub) questionCompleted() {
 		},
 	})
 
-	// Rotate host or end quiz
 	h.rotateHostOrEnd()
-	// Clear current question
 	h.activeQuiz.CurrentQuestion = nil
 }
 
-// rotateHostOrEnd either moves to the next host or ends quiz if everyone has hosted
+// --- Host Rotation / End Quiz ---
+
 func (h *Hub) rotateHostOrEnd() {
 	var quiz entity.Quiz
 	h.db.First(&quiz, "id = ?", h.channelID)
 	if quiz.ID == "" {
+		log.Printf("[Hub %s] rotateHostOrEnd: no quiz found", h.channelID)
 		return
 	}
 
-	// Find current host index in h.joinedUsers
+	// Find current host index
 	currHostIndex := -1
 	for i, uid := range h.joinedUsers {
 		if uid == quiz.HostID {
@@ -328,25 +348,23 @@ func (h *Hub) rotateHostOrEnd() {
 		}
 	}
 	if currHostIndex == -1 {
-		// fallback
 		currHostIndex = 0
 	}
 
-	// Move to next
 	nextIndex := currHostIndex + 1
 	if nextIndex >= len(h.joinedUsers) {
-		// Everyone has hosted once -> end quiz
+		log.Printf("[Hub %s] All joined users have hosted. Ending quiz...", h.channelID)
 		h.endQuiz()
 		return
 	}
 
-	// Otherwise, new host
 	newHost := h.joinedUsers[nextIndex]
 	quiz.HostID = newHost
 	quiz.UpdatedAt = time.Now()
 	h.db.Save(&quiz)
 
-	// Broadcast updated host
+	log.Printf("[Hub %s] Next host = %s", h.channelID, newHost)
+
 	h.broadcastMessage(message.WsMessage{
 		Type: "new_host",
 		Payload: struct {
@@ -355,23 +373,21 @@ func (h *Hub) rotateHostOrEnd() {
 			NewHostID: newHost,
 		},
 	})
-
-	// Now wait for the next "question_posted" from the new host
 }
 
-// endQuiz sets quiz status to "completed" and broadcasts final scores
 func (h *Hub) endQuiz() {
 	var quiz entity.Quiz
 	h.db.First(&quiz, "id = ?", h.channelID)
 	if quiz.ID == "" {
+		log.Printf("[Hub %s] endQuiz: no quiz found", h.channelID)
 		return
 	}
 	quiz.Status = "completed"
 	quiz.UpdatedAt = time.Now()
 	h.db.Save(&quiz)
 
-	// Final scores
 	finalScores := h.getFinalScores()
+	log.Printf("[Hub %s] Quiz ended. Broadcasting final scores...", h.channelID)
 
 	h.broadcastMessage(message.WsMessage{
 		Type: "quiz_ended",
@@ -382,25 +398,22 @@ func (h *Hub) endQuiz() {
 		},
 	})
 
-	// Clear active quiz from memory
 	h.activeQuiz = nil
 }
 
-// getFinalScores returns all Score rows for this quiz
+// getFinalScores fetches Score rows for this quiz
 func (h *Hub) getFinalScores() []entity.Score {
 	var scores []entity.Score
 	h.db.Where("quiz_id = ?", h.channelID).Find(&scores)
 	return scores
 }
 
-// broadcastMessage sends a WsMessage to all connected clients
 func (h *Hub) broadcastMessage(msg message.WsMessage) {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
-		log.Println("Failed to marshal broadcast:", err)
+		log.Printf("[Hub %s] broadcastMessage: marshal error: %v", h.channelID, err)
 		return
 	}
-
 	for client := range h.clients {
 		select {
 		case client.Send <- msgBytes:
@@ -411,7 +424,7 @@ func (h *Hub) broadcastMessage(msg message.WsMessage) {
 	}
 }
 
-// Client Read/Write pumps
+// --- Client Pumps ---
 
 func (c *Client) ReadPump(hub *Hub) {
 	defer func() {
@@ -423,18 +436,17 @@ func (c *Client) ReadPump(hub *Hub) {
 		_, msg, err := c.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("Read error: %v", err)
+				log.Printf("[Hub %s] WebSocket read error: %v", hub.channelID, err)
 			}
 			break
 		}
 
 		var wsMsg message.WsMessage
 		if err := json.Unmarshal(msg, &wsMsg); err != nil {
-			log.Printf("Message parsing error: %v", err)
+			log.Printf("[Hub %s] Message parsing error: %v", hub.channelID, err)
 			continue
 		}
 
-		// Send to Hub for processing
 		hub.broadcast <- wsMsg
 	}
 }
@@ -446,11 +458,11 @@ func (c *Client) WritePump() {
 		select {
 		case message, ok := <-c.Send:
 			if !ok {
-				// Hub closed channel
+				log.Printf("[Client] Send channel closed; ending WritePump")
 				return
 			}
 			if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
-				log.Printf("Write error: %v", err)
+				log.Printf("[Client] Write error: %v", err)
 				return
 			}
 		}

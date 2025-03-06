@@ -13,7 +13,7 @@ type StartQuizPayload struct {
 type QuestionPayload struct {
 	Question      string   `json:"question"`
 	Options       []string `json:"options"`
-	CorrectAnswer int      `json:"-"`
+	CorrectAnswer int      `json:"correctAnswer"`
 	TimerDuration int      `json:"timerDuration"`
 	QuestionIndex int      `json:"questionIndex"`
 }
