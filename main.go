@@ -106,6 +106,7 @@ func handleJoin(w http.ResponseWriter, r *http.Request) {
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// quizID is your "channel"
 	quizID := r.URL.Query().Get("channel")
+	userID := r.URL.Query().Get("user")
 	if quizID == "" {
 		http.Error(w, "Channel (quizID) required", http.StatusBadRequest)
 		return
@@ -128,8 +129,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &websocket.Client{
-		Conn: conn,
-		Send: make(chan []byte, 256),
+		Conn:   conn,
+		Send:   make(chan []byte, 256),
+		UserID: userID,
 	}
 	hub.Register <- client
 
