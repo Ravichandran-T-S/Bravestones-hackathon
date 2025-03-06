@@ -121,6 +121,7 @@ func (cm *ChannelManager) JoinQuiz(topicName string, user *entity.User) (*Hub, e
 		})
 		cm.quizTimers[quiz.ID] = timer
 		log.Printf("[ChannelManager] Set 1-min auto-start timer for quiz (ID=%s).", quiz.ID)
+		hub.hostID = user.ID
 	}
 
 	return hub, nil

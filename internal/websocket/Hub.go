@@ -26,6 +26,7 @@ type Hub struct {
 	joinedUsers []string
 	mutex       sync.Mutex
 	incoming    chan inboundMessage
+	hostID      string
 }
 
 type inboundMessage struct {
@@ -57,11 +58,16 @@ func NewHub(channelID string, db *gorm.DB) *Hub {
 		unregister: make(chan *Client),
 		activeQuiz: nil,
 		incoming:   make(chan inboundMessage),
+		hostID:     "",
 	}
 }
 
 func (h *Hub) ChannelID() string {
 	return h.channelID
+}
+
+func (h *Hub) HostID() string {
+	return h.hostID
 }
 
 func (h *Hub) Run() {
