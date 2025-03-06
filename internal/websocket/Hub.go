@@ -488,13 +488,45 @@ func (h *Hub) endQuiz() {
 
 	finalScores := h.getFinalScores()
 	log.Printf("[Hub %s] Quiz ended. Broadcasting final scores...", h.channelID)
+	type updatedFinalScore struct {
+		ID             string `gorm:"primaryKey"`
+		QuizID         string
+		UserID         string
+		UserName       string
+		TotalScore     int
+		LastQuestion   int
+		LastScore      int
+		QuestionsAsked int
+		CreatedAt      time.Time
+		UpdatedAt      time.Time
+	}
+
+	var updatedFinalScores []updatedFinalScore
+
+	for _, finalScore := range finalScores {
+		var user entity.User
+
+		h.db.First(&user, "id = ?", finalScore.UserID)
+		updatedFinalScores = append(updatedFinalScores, updatedFinalScore{
+			ID:             finalScore.ID,
+			QuizID:         finalScore.QuizID,
+			UserID:         finalScore.UserID,
+			UserName:       user.Username,
+			TotalScore:     finalScore.TotalScore,
+			LastQuestion:   finalScore.LastQuestion,
+			LastScore:      finalScore.LastScore,
+			QuestionsAsked: finalScore.QuestionsAsked,
+			CreatedAt:      finalScore.CreatedAt,
+			UpdatedAt:      finalScore.UpdatedAt,
+		})
+	}
 
 	h.broadcastMessage(message.WsMessage{
 		Type: "quiz_ended",
 		Payload: struct {
-			FinalScores []entity.Score `json:"finalScores"`
+			updatedFinalScores []updatedFinalScore `json:"finalScores"`
 		}{
-			FinalScores: finalScores,
+			updatedFinalScores: updatedFinalScores,
 		},
 	})
 
