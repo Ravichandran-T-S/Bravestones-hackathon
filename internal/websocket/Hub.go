@@ -52,6 +52,10 @@ func NewHub(channelID string, db *gorm.DB) *Hub {
 	}
 }
 
+func (h *Hub) ChannelID() string {
+	return h.channelID
+}
+
 func (h *Hub) Run() {
 	for {
 		select {

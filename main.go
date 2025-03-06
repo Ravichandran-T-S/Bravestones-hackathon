@@ -1,11 +1,11 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
-
-	"fmt"
 
 	"github.com/Ravichandran-T-S/Bravestones-hackathon/internal/data/entity"
 	"github.com/Ravichandran-T-S/Bravestones-hackathon/internal/websocket"
@@ -66,7 +66,6 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
 
-// handleJoin is a simple example of an HTTP join API
 func handleJoin(w http.ResponseWriter, r *http.Request) {
 	// Parse form or JSON to get topic + username
 	topicName := r.FormValue("topic")
@@ -86,13 +85,21 @@ func handleJoin(w http.ResponseWriter, r *http.Request) {
 		db.Create(&user)
 	}
 
-	_, err := channelManager.JoinQuiz(topicName, &user)
+	// NOTE: We now capture the returned hub.
+	hub, err := channelManager.JoinQuiz(topicName, &user)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
-	w.Write([]byte("Joined quiz successfully"))
+	// Return channelID (quiz ID) in JSON response
+	response := map[string]interface{}{
+		"message":   "Joined quiz successfully",
+		"channelId": hub.ChannelID(),
+		"userId":    user.ID,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // handleWebSocket upgrades the connection and registers the client to the relevant Hub
