@@ -331,7 +331,9 @@ func (h *Hub) questionCompleted() {
 	})
 
 	h.rotateHostOrEnd()
-	h.activeQuiz.CurrentQuestion = nil
+	if h.activeQuiz != nil {
+		h.activeQuiz.CurrentQuestion = nil
+	}
 }
 
 // --- Host Rotation / End Quiz ---
