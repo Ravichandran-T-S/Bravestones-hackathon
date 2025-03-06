@@ -23,16 +23,17 @@ var (
 
 const (
 	DBUsername = "root"
-	DBHost = "common-rds.allen-internal-sandbox.in"
+	DBHost     = "common-rds.allen-internal-sandbox.in"
 	DBPassword = "aScrEHD9myHeBPZe6co5"
-	DBName =  "bravestones_hackathon"
+	DBName     = "bravestones_hackathon"
 )
 
 func main() {
 	// Initialize database
 	populatedDBSource := fmt.Sprintf("%s:%s@tcp(%s)/%s", DBUsername, DBPassword, DBHost, DBName)
 	dsn := fmt.Sprintf("%s?charset=utf8mb4&parseTime=True&loc=Local", populatedDBSource)
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	var err error
+	db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
 
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
