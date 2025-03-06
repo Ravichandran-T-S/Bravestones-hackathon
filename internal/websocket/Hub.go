@@ -343,12 +343,14 @@ func (h *Hub) questionCompleted() {
 
 	var scores []struct {
 		UserID    string `json:"userId"`
+		UserName  string `json:"userName"`
 		Total     int    `json:"total"`
 		LastScore int    `json:"lastScore"`
 	}
 	h.db.Model(&entity.Score{}).
-		Where("quiz_id = ?", h.channelID).
-		Select("user_id, total_score as total, last_score as last_score").
+		Select("scores.user_id, users.username, scores.total_score as total, scores.last_score as last_score").
+		Joins("left join users on users.id = scores.user_id").
+		Where("scores.quiz_id = ?", h.channelID).
 		Scan(&scores)
 
 	qIndex := h.activeQuiz.CurrentQuestion.QuestionIndex
@@ -358,6 +360,7 @@ func (h *Hub) questionCompleted() {
 		Payload: struct {
 			Scores []struct {
 				UserID    string `json:"userId"`
+				UserName  string `json:"userName"`
 				Total     int    `json:"total"`
 				LastScore int    `json:"lastScore"`
 			} `json:"scores"`
