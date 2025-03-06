@@ -96,6 +96,11 @@ func (h *Hub) handleMessage(msg message.WsMessage) {
 	case "end_question":
 		h.questionCompleted()
 
+	case "user_joined":
+		log.Printf("[Hub %s] New user joined: %v", h.channelID, msg.Payload)
+		// Re-broadcast to all connected clients
+		h.broadcastMessage(msg)
+
 	default:
 		log.Printf("[Hub %s] Unknown message type: %s", h.channelID, msg.Type)
 	}
