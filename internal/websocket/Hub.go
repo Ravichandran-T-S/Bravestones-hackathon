@@ -142,11 +142,17 @@ func (h *Hub) handleMessage(msg message.WsMessage) {
 // -- User Start Quiz ---
 
 func (h *Hub) handleUserStartQuiz(payload interface{}) {
-	pl, ok := payload.(message.UserStartQuizPayload)
-	if !ok {
-		log.Printf("[Hub %s] Invalid payload for user_start_quiz", h.channelID)
+	var pl message.UserStartQuizPayload
+	bytes, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[Hub %s] Error marshaling payload: %v", h.channelID, err)
 		return
 	}
+	if err := json.Unmarshal(bytes, &pl); err != nil {
+		log.Printf("[Hub %s] Invalid payload for user_start_quiz: %v", h.channelID, err)
+		return
+	}
+
 	quizID := pl.ChannelID
 	userID := pl.HostID
 
