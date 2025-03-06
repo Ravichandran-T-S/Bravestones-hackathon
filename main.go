@@ -5,12 +5,14 @@ import (
 	"net/http"
 	"time"
 
+	"fmt"
+
 	"github.com/Ravichandran-T-S/Bravestones-hackathon/internal/data/entity"
 	"github.com/Ravichandran-T-S/Bravestones-hackathon/internal/websocket"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	ws "github.com/gorilla/websocket"
-	"gorm.io/driver/postgres"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -21,9 +23,10 @@ var (
 
 func main() {
 	// Initialize database
-	dsn := "host=localhost user=postgres password=postgres dbname=quiz port=5432 sslmode=disable"
-	var err error
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	populatedDBSource := fmt.Sprintf("%s:%s@tcp(%s)/%s", "root", "aScrEHD9myHeBPZe6co5", "common-rds.allen-internal-sandbox.in", "bravestones_hackathon")
+	dsn := fmt.Sprintf("%s?charset=utf8mb4&parseTime=True&loc=Local", populatedDBSource)
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
@@ -35,6 +38,7 @@ func main() {
 		&entity.User{},
 		&entity.Topic{}, // ensure Topic is migrated too
 	)
+
 	if err != nil {
 		log.Fatal("Auto-migration failed:", err)
 	}
