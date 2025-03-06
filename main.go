@@ -1,203 +1,82 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
+	_ "fmt"
 	"log"
 	"net/http"
-	"sync"
 
-	"github.com/gorilla/websocket"
+	"github.com/Ravichandran-T-S/Bravestones-hackathon/internal/data/entity"
+	"github.com/Ravichandran-T-S/Bravestones-hackathon/internal/websocket"
+	"github.com/gorilla/mux"
+	ws "github.com/gorilla/websocket"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
-// Upgrader is used to upgrade HTTP connections to WebSocket connections.
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all connections (for demonstration purposes)
-	},
-}
-
-// Define a struct to represent the JSON message
-type Message struct {
-	Signal string            `json:"signal"` // Signal type (e.g., "create_user")
-	Data   map[string]string `json:"data"`   // Data associated with the signal
-}
-
-// Client represents a connected WebSocket client
-type Client struct {
-	conn *websocket.Conn
-	send chan []byte
-}
-
-// Hub manages all connected clients
-type Hub struct {
-	clients    map[*Client]bool  // Track all connected clients
-	broadcast  chan []byte       // Channel for broadcasting messages to all clients
-	register   chan *Client      // Channel for registering new clients
-	unregister chan *Client      // Channel for unregistering clients
-	users      map[string]string // Shared state: map of users (name -> email)
-	mu         sync.Mutex        // Mutex to protect shared state
-}
-
-// NewHub creates a new Hub instance
-func NewHub() *Hub {
-	return &Hub{
-		clients:    make(map[*Client]bool),
-		broadcast:  make(chan []byte),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		users:      make(map[string]string),
-	}
-}
-
-// Run starts the Hub
-func (h *Hub) Run() {
-	for {
-		select {
-		case client := <-h.register:
-			// Register a new client
-			h.clients[client] = true
-			fmt.Println("Client connected")
-
-		case client := <-h.unregister:
-			// Unregister a client
-			if _, ok := h.clients[client]; ok {
-				delete(h.clients, client)
-				close(client.send)
-				fmt.Println("Client disconnected")
-			}
-
-		case message := <-h.broadcast:
-			// Broadcast a message to all clients
-			for client := range h.clients {
-				select {
-				case client.send <- message:
-				default:
-					close(client.send)
-					delete(h.clients, client)
-				}
-			}
-		}
-	}
-}
-
-// handleWebSocket handles WebSocket connections
-func (h *Hub) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Upgrade the HTTP connection to a WebSocket connection
-	conn, err := upgrader.Upgrade(w, r, nil)
+func main() {
+	// Initialize database
+	dsn := "host=localhost user=postgres password=postgres dbname=quiz port=5432 sslmode=disable"
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Println("Upgrade error:", err)
+		log.Fatal("Failed to connect to database:", err)
+	}
+
+	// Auto-migrate entities
+	err = db.AutoMigrate(
+		&entity.Quiz{},
+		&entity.Score{},
+		&entity.User{},
+		&entity.Quiz{},
+	)
+	if err != nil {
+		log.Fatal("Auto-migration failed:", err)
+	}
+
+	// Create router
+	r := mux.NewRouter()
+
+	// WebSocket endpoint
+	r.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		handleWebSocket(db, w, r)
+	})
+
+	// Start server
+	log.Println("Starting server on :8080")
+	log.Fatal(http.ListenAndServe(":8080", r))
+}
+
+func handleWebSocket(db *gorm.DB, w http.ResponseWriter, r *http.Request) {
+	// Get channel ID from query params
+	query := r.URL.Query()
+	channelID := query.Get("channel")
+	if channelID == "" {
+		http.Error(w, "Channel ID required", http.StatusBadRequest)
 		return
 	}
 
-	// Create a new client
-	client := &Client{
-		conn: conn,
-		send: make(chan []byte, 256),
-	}
-
-	// Register the client with the Hub
-	h.register <- client
-
-	// Start a goroutine to read messages from the client
-	go func() {
-		defer func() {
-			h.unregister <- client
-			conn.Close()
-		}()
-
-		for {
-			// Read the message from the WebSocket connection
-			_, message, err := conn.ReadMessage()
-			if err != nil {
-				log.Println("Read error:", err)
-				break
-			}
-
-			// Log the received message
-			fmt.Printf("Received: %s\n", message)
-
-			// Parse the JSON message into the Message struct
-			var msg Message
-			if err := json.Unmarshal(message, &msg); err != nil {
-				log.Println("JSON unmarshal error:", err)
-				conn.WriteMessage(websocket.TextMessage, []byte(`{"error": "Invalid JSON"}`))
-				continue
-			}
-
-			// Handle the signal
-			switch msg.Signal {
-			case "create_user":
-				// Extract user data from the message
-				name, ok := msg.Data["name"]
-				if !ok {
-					conn.WriteMessage(websocket.TextMessage, []byte(`{"error": "Missing 'name' field"}`))
-					continue
-				}
-				email, ok := msg.Data["email"]
-				if !ok {
-					conn.WriteMessage(websocket.TextMessage, []byte(`{"error": "Missing 'email' field"}`))
-					continue
-				}
-
-				// Add the user to the shared state
-				h.mu.Lock()
-				h.users[name] = email
-				h.mu.Unlock()
-
-				// Broadcast the new user to all clients
-				response := map[string]interface{}{
-					"signal": "user_created",
-					"data": map[string]string{
-						"name":  name,
-						"email": email,
-					},
-				}
-				responseJSON, err := json.Marshal(response)
-				if err != nil {
-					log.Println("JSON marshal error:", err)
-					continue
-				}
-				h.broadcast <- responseJSON
-
-			default:
-				// Handle unknown signals
-				conn.WriteMessage(websocket.TextMessage, []byte(`{"error": "Unknown signal"}`))
-			}
-		}
-	}()
-
-	// Start a goroutine to write messages to the client
-	go func() {
-		defer func() {
-			conn.Close()
-		}()
-
-		for {
-			select {
-			case message, ok := <-client.send:
-				if !ok {
-					// The Hub closed the channel
-					conn.WriteMessage(websocket.CloseMessage, []byte{})
-					return
-				}
-				if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-					log.Println("Write error:", err)
-					return
-				}
-			}
-		}
-	}()
-}
-
-func main() {
-	// Create a new Hub
-	hub := NewHub()
+	// Create or get existing hub
+	hub := websocket.NewHub(channelID, db)
 	go hub.Run()
 
-	// Register the WebSocket handler
-	http.HandleFunc("/ws", hub.handleWebSocket)
+	// Upgrade to WebSocket connection
+	upgrader := ws.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
 
-	fmt.Println("WebSocket server started at ws://localhost:8080/ws")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade error: %v", err)
+		return
+	}
+
+	// Create and register client
+	client := &websocket.Client{
+		Conn: conn,
+		Send: make(chan []byte, 256),
+	}
+	hub.Register <- client
+
+	// Start communication routines
+	go client.WritePump()
+	go client.ReadPump(hub)
 }
