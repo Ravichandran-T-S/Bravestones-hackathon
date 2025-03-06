@@ -97,6 +97,7 @@ func handleJoin(w http.ResponseWriter, r *http.Request) {
 		"message":   "Joined quiz successfully",
 		"channelId": hub.ChannelID(),
 		"userId":    user.ID,
+		"hostID":    hub.HostID(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
