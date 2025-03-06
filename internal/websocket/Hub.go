@@ -348,10 +348,16 @@ func (h *Hub) questionCompleted() {
 		LastScore int    `json:"lastScore"`
 	}
 	h.db.Model(&entity.Score{}).
-		Select("scores.user_id, users.username, scores.total_score as total, scores.last_score as last_score").
-		Joins("left join users on users.id = scores.user_id").
-		Where("scores.quiz_id = ?", h.channelID).
+		Where("quiz_id = ?", h.channelID).
+		Select("user_id, total_score as total, last_score as last_score").
 		Scan(&scores)
+
+	// get username from user_id
+	for i, _ := range scores {
+		var user entity.User
+		h.db.First(&user, "id = ?", scores[i].UserID)
+		scores[i].UserName = user.Username
+	}
 
 	qIndex := h.activeQuiz.CurrentQuestion.QuestionIndex
 
