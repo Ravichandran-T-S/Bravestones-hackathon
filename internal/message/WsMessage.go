@@ -11,6 +11,11 @@ type StartQuizPayload struct {
 	Participants []ParticipantInfo `json:"participants"`
 }
 
+type UserStartQuizPayload struct {
+	ChannelID string `json:"channelId"`
+	HostID    string `json:"hostId"`
+}
+
 type ParticipantInfo struct {
 	UserID   string `json:"userId"`
 	Username string `json:"username"`

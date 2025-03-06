@@ -118,7 +118,8 @@ func (h *Hub) handleMessage(msg message.WsMessage) {
 	switch msg.Type {
 	case "start_quiz":
 		h.handleStartQuiz(msg.Payload)
-
+	case "user_start_quiz":
+		h.handleUserStartQuiz(msg.Payload)
 	case "question_posted":
 		h.handleQuestionPosted(msg.Payload)
 
@@ -136,6 +137,45 @@ func (h *Hub) handleMessage(msg message.WsMessage) {
 	default:
 		log.Printf("[Hub %s] Unknown message type: %s", h.channelID, msg.Type)
 	}
+}
+
+// -- User Start Quiz ---
+
+func (h *Hub) handleUserStartQuiz(payload interface{}) {
+	pl, ok := payload.(message.UserStartQuizPayload)
+	if !ok {
+		log.Printf("[Hub %s] Invalid payload for user_start_quiz", h.channelID)
+		return
+	}
+	quizID := pl.ChannelID
+	userID := pl.HostID
+
+	participants := getParticipants(*h.db, quizID)
+
+	h.startQuiz(quizID, userID, participants)
+}
+
+func getParticipants(db gorm.DB, quizID string) []message.ParticipantInfo {
+	var participants []message.ParticipantInfo
+
+	var scoreRows []entity.Score
+
+	if err := db.Where("quiz_id = ?", quizID).Find(&scoreRows).Error; err == nil {
+		for _, s := range scoreRows {
+			log.Printf("[ChannelManager] Found score row for user (ID=%s) in quiz (ID=%s)", s.UserID, s.QuizID)
+			// Retrieve the associated user
+			var u entity.User
+			if err := db.First(&u, "id = ?", s.UserID).Error; err == nil && u.ID != "" {
+				log.Printf("[ChannelManager] Found user (ID=%s) for score row", u.ID)
+				participants = append(participants, message.ParticipantInfo{
+					UserID:   u.ID,
+					Username: u.Username,
+				})
+			}
+		}
+	}
+
+	return participants
 }
 
 // --- Start Quiz ---
