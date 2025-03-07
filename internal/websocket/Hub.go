@@ -305,9 +305,9 @@ func (h *Hub) handleQuestionPosted(payload interface{}) {
 
 	// Start timer (default 30s if none specified)
 	duration := 15
-	if qp.TimerDuration > 0 {
-		duration = qp.TimerDuration
-	}
+	//if qp.TimerDuration > 0 {
+	//	duration = qp.TimerDuration
+	//}
 	if h.activeQuiz.Timer != nil {
 		h.activeQuiz.Timer.Stop()
 	}
