@@ -134,6 +134,14 @@ func (h *Hub) handleMessage(msg message.WsMessage) {
 		// Re-broadcast to all connected clients
 		h.broadcastMessage(msg)
 
+	case "enable_chat":
+		log.Printf("[Hub %s] Enabling chat for channel %s", h.channelID, h.channelID)
+		h.broadcastMessage(msg)
+
+	case "sent_chat_message":
+		log.Printf("[Hub %s] Received chat message: %v", h.channelID, msg.Payload)
+		h.broadcastMessage(msg)
+
 	default:
 		log.Printf("[Hub %s] Unknown message type: %s", h.channelID, msg.Type)
 	}
