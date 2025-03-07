@@ -529,12 +529,14 @@ func (h *Hub) endQuiz() {
 		})
 	}
 
+	log.Printf("[Hub %s] Final scores: %+v", h.channelID, updatedFinalScores)
+
 	h.broadcastMessage(message.WsMessage{
 		Type: "quiz_ended",
 		Payload: struct {
-			updatedFinalScores []updatedFinalScore `json:"finalScores"`
+			UpdatedFinalScores []updatedFinalScore `json:"finalScores"`
 		}{
-			updatedFinalScores: updatedFinalScores,
+			UpdatedFinalScores: updatedFinalScores,
 		},
 	})
 
